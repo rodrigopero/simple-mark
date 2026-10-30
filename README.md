@@ -1,12 +1,39 @@
 # Simple Mark
 
-Minimal Markdown viewer for Windows.
+Minimal, secure Markdown viewer for Windows.
 
 - Opens `.md` files rendered (formatted) by default.
 - Optional plain-text editing (`View > Edit plain text`, `Ctrl+E`).
-- Runs on the .NET Framework 4.x already included in Windows 10/11.
+- Light and dark mode (`View > Dark mode`, `Ctrl+D`); starts with the Windows app theme.
+- Small and dependency-free: runs on the .NET Framework 4.8 already included in Windows 10/11.
+
+## Download
+
+1. Download `SimpleMark-<version>-win.zip` from the [latest release](https://github.com/rodrigopero/simple-mark/releases/latest).
+2. Optionally verify it against the `.sha256` file published next to it:
+   ```powershell
+   Get-FileHash .\SimpleMark-<version>-win.zip -Algorithm SHA256
+   ```
+3. Extract the folder anywhere and run `SimpleMark.exe`. No installation is needed.
+
+The executable is not code-signed, so the first time you run it Windows SmartScreen may show
+"Windows protected your PC". Choose **More info > Run anyway**. Release packages are built from
+the tagged source by GitHub Actions, see [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+To open `.md` files with a double click, use **Open with > Choose another app** on any `.md` file
+and pick `SimpleMark.exe`.
+
+## Usage
+
+```cmd
+SimpleMark.exe path\to\file.md
+```
+
+Or use `File > Open` (`Ctrl+O`). Save with `Ctrl+S`.
 
 ## Build
+
+Requires only Windows: the C# compiler of the built-in .NET Framework is used.
 
 ```cmd
 build.cmd
@@ -14,14 +41,6 @@ build.cmd
 
 Output: `bin\SimpleMark.exe` plus the libraries from `lib\`. The build refuses to run if any
 library in `lib\` does not match its pinned hash in `lib\SHA256SUMS`.
-
-## Usage
-
-```cmd
-bin\SimpleMark.exe path\to\file.md
-```
-
-Or use `File > Open` (`Ctrl+O`). Save with `Ctrl+S`.
 
 ## How it works
 
@@ -39,11 +58,22 @@ in a RichEdit 4.1 control, so no browser engine is involved.
 - No network access.
 - Files larger than 5 MB (documents) or 20 MB (images) are rejected; parser nesting depth is limited.
 - Saves are atomic (temp file + replace) so a failed write never corrupts the document.
-- `msftedit.dll` is loaded only from System32; the app runs with the invoking user's privileges (`asInvoker`).
+- System DLLs are loaded only from System32; the app runs with the invoking user's privileges (`asInvoker`).
 
-## Third-party libraries
+## Releasing
 
-Taken from nuget.org (`lib/net462` builds), package hashes verified against the NuGet catalog.
+1. Update the version in `src/AssemblyInfo.cs`.
+2. Commit, then push an annotated tag whose message becomes the release notes:
+   ```cmd
+   git tag -a v1.2.3 -m "Release notes"
+   git push origin v1.2.3
+   ```
+3. The release workflow checks that the tag matches the version, builds, and publishes the zip and its SHA-256.
+
+## License
+
+[MIT](LICENSE). Third-party libraries and their licenses are listed in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt):
 
 | Library | Version | License |
 |---|---|---|
@@ -52,3 +82,5 @@ Taken from nuget.org (`lib/net462` builds), package hashes verified against the 
 | System.Buffers | 4.6.1 | MIT |
 | System.Numerics.Vectors | 4.6.1 | MIT |
 | System.Runtime.CompilerServices.Unsafe | 6.1.2 | MIT |
+
+Library binaries were taken from nuget.org (`lib/net462` builds) and verified against the NuGet catalog hashes.
