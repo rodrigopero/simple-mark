@@ -5,20 +5,24 @@ using System.Security;
 using System.Text;
 using System.Windows.Forms;
 
-namespace MdViewer
+namespace SimpleMark
 {
     internal sealed class MainForm : Form
     {
         private const long MaxFileBytes = 5L * 1024 * 1024;
-        private const string AppName = "MD Viewer";
+        private const string AppName = "Simple Mark";
         private const string FileFilter =
             "Markdown (*.md;*.markdown)|*.md;*.markdown|Text (*.txt)|*.txt|All files (*.*)|*.*";
 
         private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
 
-        private readonly RichTextBox viewer;
-        private readonly TextBox editor;
+        private readonly RichTextView viewer;
+        private readonly PlainTextEditor editor;
+        private readonly Icon appIcon;
         private readonly ToolStripMenuItem editItem;
+        private readonly ToolStripMenuItem darkItem;
+        private readonly MenuStrip menu;
+        private readonly Panel divider;
         private readonly MarkdownRenderer renderer;
         private readonly string initialPath;
 
@@ -27,35 +31,47 @@ namespace MdViewer
         private bool suppressDirty;
         private bool hasBom;
         private bool useLf;
+        private FormWindowState lastWindowState;
+        private Palette palette = Palette.FromSystem();
 
         public MainForm(string initialPath)
         {
             this.initialPath = initialPath;
 
             Text = AppName;
-            ClientSize = new Size(900, 700);
+            Font = SystemFonts.MessageBoxFont;
+            ClientSize = new Size(1000, 760);
+            MinimumSize = new Size(480, 360);
             StartPosition = FormStartPosition.CenterScreen;
 
-            viewer = new RichTextBox
+            using (Stream iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("SimpleMark.app.ico"))
+            {
+                if (iconStream != null)
+                {
+                    appIcon = new Icon(iconStream);
+                    Icon = appIcon;
+                }
+            }
+
+            viewer = new RichTextView
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 DetectUrls = false,
                 EnableAutoDragDrop = false,
                 BorderStyle = BorderStyle.None,
-                BackColor = Color.White,
                 ScrollBars = RichTextBoxScrollBars.Vertical,
             };
 
-            editor = new TextBox
+            editor = new PlainTextEditor
             {
                 Dock = DockStyle.Fill,
                 Multiline = true,
                 AcceptsTab = true,
                 AcceptsReturn = true,
                 MaxLength = 0,
-                ScrollBars = ScrollBars.Both,
-                WordWrap = false,
+                ScrollBars = ScrollBars.Vertical,
+                WordWrap = true,
                 BorderStyle = BorderStyle.None,
                 Font = new Font("Consolas", 10.5f),
                 Visible = false,
@@ -70,24 +86,51 @@ namespace MdViewer
 
             editItem = new ToolStripMenuItem("&Edit plain text", null, OnToggleEdit) { ShortcutKeys = Keys.Control | Keys.E };
             var viewMenu = new ToolStripMenuItem("&View");
-            viewMenu.DropDownItems.Add(editItem);
+            darkItem = new ToolStripMenuItem("&Dark mode", null, OnToggleDark) { ShortcutKeys = Keys.Control | Keys.D };
+            viewMenu.DropDownItems.AddRange(new ToolStripItem[] { editItem, darkItem });
 
-            var menu = new MenuStrip();
+            menu = new MenuStrip { Padding = new Padding(8, 4, 0, 4) };
             menu.Items.AddRange(new ToolStripItem[] { fileMenu, viewMenu });
 
+            // Thin brand-colored line between the menu and the document.
+            divider = new Panel { Dock = DockStyle.Top, Height = 2, BackColor = Palette.Brand };
+
+            // Fill controls first: WinForms docks the last added control first.
             Controls.Add(viewer);
             Controls.Add(editor);
+            Controls.Add(divider);
             Controls.Add(menu);
             MainMenuStrip = menu;
 
             renderer = new MarkdownRenderer(viewer);
+            ApplyTheme();
             UpdateTitle();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            WindowChrome.ApplyToWindow(this, palette);
         }
 
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
             if (!string.IsNullOrEmpty(initialPath)) OpenFile(initialPath);
+        }
+
+        protected override void OnResizeEnd(EventArgs e)
+        {
+            base.OnResizeEnd(e);
+            RerenderIfWidthChanged();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            if (WindowState == lastWindowState) return;
+            lastWindowState = WindowState;
+            if (WindowState != FormWindowState.Minimized) RerenderIfWidthChanged();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -102,6 +145,7 @@ namespace MdViewer
             {
                 renderer.Dispose();
                 editor.Font.Dispose();
+                if (appIcon != null) appIcon.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -125,7 +169,7 @@ namespace MdViewer
         {
             if (editor.Visible)
             {
-                renderer.Render(editor.Text);
+                renderer.Render(editor.Text, DocumentDirectory());
                 editor.Visible = false;
                 viewer.Visible = true;
                 viewer.Focus();
@@ -137,6 +181,30 @@ namespace MdViewer
                 editor.Focus();
             }
             editItem.Checked = editor.Visible;
+        }
+
+        private void OnToggleDark(object sender, EventArgs e)
+        {
+            palette = palette.IsDark ? Palette.Light : Palette.Dark;
+            ApplyTheme();
+            if (viewer.Visible) RerenderPreservingScroll();
+            else renderer.Rerender();
+        }
+
+        private void ApplyTheme()
+        {
+            BackColor = palette.Background;
+            viewer.BackColor = palette.Background;
+            viewer.DarkScrollbars = palette.IsDark;
+            editor.BackColor = palette.Background;
+            editor.ForeColor = palette.Text;
+            editor.DarkScrollbars = palette.IsDark;
+            menu.Renderer = Theme.CreateMenuRenderer(palette);
+            menu.BackColor = palette.Background;
+            menu.ForeColor = palette.Text;
+            darkItem.Checked = palette.IsDark;
+            renderer.Palette = palette;
+            WindowChrome.ApplyToWindow(this, palette);
         }
 
         private void OnEditorTextChanged(object sender, EventArgs e)
@@ -151,7 +219,7 @@ namespace MdViewer
             try
             {
                 string fullPath = Path.GetFullPath(path);
-                byte[] bytes = ReadBounded(fullPath);
+                byte[] bytes = SafeFile.ReadBounded(fullPath, MaxFileBytes);
 
                 hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
                 int offset = hasBom ? 3 : 0;
@@ -164,8 +232,8 @@ namespace MdViewer
                 editor.Text = normalized.Replace("\n", "\r\n");
                 suppressDirty = false;
 
-                renderer.Render(normalized);
                 currentPath = fullPath;
+                renderer.Render(normalized, DocumentDirectory());
                 dirty = false;
                 if (editor.Visible) OnToggleEdit(this, EventArgs.Empty);
                 UpdateTitle();
@@ -178,30 +246,6 @@ namespace MdViewer
             }
         }
 
-        private static byte[] ReadBounded(string path)
-        {
-            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            {
-                if (stream.Length > MaxFileBytes)
-                {
-                    throw new IOException("The file exceeds the " + (MaxFileBytes / (1024 * 1024)) + " MB limit.");
-                }
-
-                var buffer = new byte[stream.Length];
-                int read = 0;
-                while (read < buffer.Length)
-                {
-                    int n = stream.Read(buffer, read, buffer.Length - read);
-                    if (n == 0) break;
-                    read += n;
-                }
-
-                if (read == buffer.Length) return buffer;
-                var trimmed = new byte[read];
-                Buffer.BlockCopy(buffer, 0, trimmed, 0, read);
-                return trimmed;
-            }
-        }
 
         private bool Save()
         {
@@ -220,7 +264,7 @@ namespace MdViewer
                 string text = editor.Text;
                 if (useLf) text = text.Replace("\r\n", "\n");
 
-                WriteAtomic(path, text, hasBom ? new UTF8Encoding(true) : Utf8NoBom);
+                SafeFile.WriteAtomic(path, text, hasBom ? new UTF8Encoding(true) : Utf8NoBom);
                 currentPath = path;
                 dirty = false;
                 UpdateTitle();
@@ -234,27 +278,6 @@ namespace MdViewer
             }
         }
 
-        // Writes to a sibling temp file first so a failure never leaves a truncated document.
-        private static void WriteAtomic(string path, string text, Encoding encoding)
-        {
-            string fullPath = Path.GetFullPath(path);
-            string directory = Path.GetDirectoryName(fullPath);
-            string tempPath = Path.Combine(directory, "." + Path.GetFileName(fullPath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
-
-            try
-            {
-                File.WriteAllText(tempPath, text, encoding);
-                if (File.Exists(fullPath)) File.Replace(tempPath, fullPath, null);
-                else File.Move(tempPath, fullPath);
-            }
-            catch
-            {
-                try { File.Delete(tempPath); }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
-                throw;
-            }
-        }
 
         private bool ConfirmDiscard()
         {
@@ -264,6 +287,25 @@ namespace MdViewer
                 MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
             if (answer == DialogResult.Yes) return Save();
             return answer == DialogResult.No;
+        }
+
+        private string DocumentDirectory()
+        {
+            return currentPath == null ? null : Path.GetDirectoryName(currentPath);
+        }
+
+        private void RerenderIfWidthChanged()
+        {
+            if (!viewer.Visible || viewer.ContentWidth == renderer.RenderedWidth) return;
+            RerenderPreservingScroll();
+        }
+
+        private void RerenderPreservingScroll()
+        {
+            int firstVisible = viewer.GetCharIndexFromPosition(new Point(1, 1));
+            renderer.Rerender();
+            viewer.Select(firstVisible, 0);
+            viewer.ScrollToCaret();
         }
 
         private void UpdateTitle()
