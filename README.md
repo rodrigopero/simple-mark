@@ -14,7 +14,7 @@ Get it from the [latest release](https://github.com/rodrigopero/simple-mark/rele
 - **Installer** (`SimpleMark-<version>-setup.exe`, recommended): installs for the current user without
   administrator rights, adds a Start menu shortcut and registers Simple Mark for `.md` and `.markdown` files.
   Uninstall it from **Settings > Apps**.
-- **Portable** (`SimpleMark-<version>-win.zip`): extract the folder anywhere and run `SimpleMark.exe`.
+- **Portable** (`SimpleMark-<version>-portable.zip`): extract the folder anywhere and run `SimpleMark.exe`.
   Nothing is written to the system.
 
 Both are built from the tagged source by GitHub Actions

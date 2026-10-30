@@ -53,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist | Out-Null
-          $name = "SimpleMark-$env:VERSION-win"
+          $name = "SimpleMark-$env:VERSION-portable"
           New-Item -ItemType Directory -Path "dist/$name" | Out-Null
           Copy-Item bin/* "dist/$name/"
           Copy-Item LICENSE, THIRD-PARTY-NOTICES.txt, README.md "dist/$name/"
@@ -105,5 +105,5 @@ jobs:
           git fetch --depth=1 origin "+refs/tags/$($env:GITHUB_REF_NAME):refs/tags/$($env:GITHUB_REF_NAME)"
           git tag -l --format='%(contents)' $env:GITHUB_REF_NAME | Set-Content -Path notes.md -Encoding utf8
           gh release create $env:GITHUB_REF_NAME `
-            "dist/SimpleMark-$env:VERSION-setup.exe" "dist/SimpleMark-$env:VERSION-win.zip" dist/SHA256SUMS.txt `
+            "dist/SimpleMark-$env:VERSION-setup.exe" "dist/SimpleMark-$env:VERSION-portable.zip" dist/SHA256SUMS.txt `
             --title "Simple Mark $env:VERSION" --notes-file notes.md --verify-tag
