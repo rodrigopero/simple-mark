@@ -63,9 +63,10 @@ in a RichEdit 4.1 control, so no browser engine is involved.
 ## Releasing
 
 1. Update the version in `src/AssemblyInfo.cs`.
-2. Commit, then push an annotated tag whose message becomes the release notes:
+2. Commit, then push an annotated tag whose message becomes the release notes
+   (`--cleanup=verbatim` keeps Markdown `#` headings, which git would otherwise strip as comments):
    ```cmd
-   git tag -a v1.2.3 -m "Release notes"
+   git tag -a v1.2.3 --cleanup=verbatim -F notes.md
    git push origin v1.2.3
    ```
 3. The release workflow checks that the tag matches the version, builds, and publishes the zip and its SHA-256.

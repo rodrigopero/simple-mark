@@ -39,7 +39,8 @@ jobs:
           Copy-Item LICENSE, THIRD-PARTY-NOTICES.txt, README.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          Set-Content -Path "dist/$name.zip.sha256" -Value "$hash  $name.zip" -Encoding ascii
+          # LF line ending so `sha256sum -c` also accepts the file.
+          [IO.File]::WriteAllText("$PWD/dist/$name.zip.sha256", "$hash  $name.zip`n")
           Add-Content $env:GITHUB_ENV "ASSET=$name"
 
       # Release notes come from the annotated tag message.
