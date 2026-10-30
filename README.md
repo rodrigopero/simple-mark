@@ -9,19 +9,31 @@ Minimal, secure Markdown viewer for Windows.
 
 ## Download
 
-1. Download `SimpleMark-<version>-win.zip` from the [latest release](https://github.com/rodrigopero/simple-mark/releases/latest).
-2. Optionally verify it against the `.sha256` file published next to it:
-   ```powershell
-   Get-FileHash .\SimpleMark-<version>-win.zip -Algorithm SHA256
-   ```
-3. Extract the folder anywhere and run `SimpleMark.exe`. No installation is needed.
+Get it from the [latest release](https://github.com/rodrigopero/simple-mark/releases/latest):
 
-The executable is not code-signed, so the first time you run it Windows SmartScreen may show
-"Windows protected your PC". Choose **More info > Run anyway**. Release packages are built from
-the tagged source by GitHub Actions, see [`.github/workflows/release.yml`](.github/workflows/release.yml).
+- **Installer** (`SimpleMark-<version>-setup.exe`, recommended): installs for the current user without
+  administrator rights, adds a Start menu shortcut and registers Simple Mark for `.md` and `.markdown` files.
+  Uninstall it from **Settings > Apps**.
+- **Portable** (`SimpleMark-<version>-win.zip`): extract the folder anywhere and run `SimpleMark.exe`.
+  Nothing is written to the system.
 
-To open `.md` files with a double click, use **Open with > Choose another app** on any `.md` file
-and pick `SimpleMark.exe`.
+Both are built from the tagged source by GitHub Actions
+(see [`.github/workflows/release.yml`](.github/workflows/release.yml)). Optionally verify a download against
+`SHA256SUMS.txt` from the same release:
+
+```powershell
+Get-FileHash .\SimpleMark-<version>-setup.exe -Algorithm SHA256
+```
+
+The files are not code-signed, so Windows SmartScreen may show "Windows protected your PC" the
+first time. Choose **More info > Run anyway**.
+
+### Make it the default app for .md files
+
+Windows does not allow apps to set themselves as default, so the installer offers a checkbox at the
+end that opens **Settings > Default apps** on Simple Mark, where you confirm it for `.md`. Later, the
+same page is reachable from **Settings > Apps > Default apps > Simple Mark**, or by right-clicking a
+`.md` file and choosing **Open with > Choose another app**.
 
 ## Usage
 

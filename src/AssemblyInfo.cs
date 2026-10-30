@@ -8,6 +8,6 @@ using System.Runtime.InteropServices;
 [assembly: ComVisible(false)]
 
 // Release version: keep in sync with the git tag (vX.Y.Z); the release workflow checks it.
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyInformationalVersion("1.1.0")]
