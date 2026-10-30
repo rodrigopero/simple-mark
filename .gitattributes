@@ -2,3 +2,4 @@
 *.cmd text eol=crlf
 *.dll binary
 *.ico binary
+*.iss text eol=crlf

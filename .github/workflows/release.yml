@@ -3,9 +3,15 @@ name: Release
 on:
   push:
     tags: ['v*.*.*']
+  # Manual runs build and test the packages without publishing a release.
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+  INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
 
 jobs:
   release:
@@ -16,13 +22,14 @@ jobs:
           persist-credentials: false
 
       # Tag values are read from env vars, never interpolated into scripts.
-      - name: Check version matches tag
+      - name: Read version
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.Substring(1)
           $match = Select-String -Path src/AssemblyInfo.cs -Pattern 'AssemblyInformationalVersion\("([^"]+)"\)'
-          if (-not $match -or $match.Matches[0].Groups[1].Value -ne $version) {
-            throw "AssemblyInformationalVersion in src/AssemblyInfo.cs does not match tag $env:GITHUB_REF_NAME"
+          if (-not $match) { throw 'AssemblyInformationalVersion not found in src/AssemblyInfo.cs' }
+          $version = $match.Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match version $version in src/AssemblyInfo.cs"
           }
           Add-Content $env:GITHUB_ENV "VERSION=$version"
 
@@ -30,26 +37,73 @@ jobs:
         shell: cmd
         run: build.cmd
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $setup = "$env:RUNNER_TEMP\innosetup.exe"
+          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:INNO_SHA256) { throw "Inno Setup hash mismatch: $hash" }
+          $dir = "$env:RUNNER_TEMP\inno"
+          Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', "/DIR=$dir" -Wait
+          if (-not (Test-Path "$dir\ISCC.exe")) { throw 'Inno Setup was not installed' }
+          Add-Content $env:GITHUB_ENV "ISCC=$dir\ISCC.exe"
+
       - name: Package
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
           $name = "SimpleMark-$env:VERSION-win"
           New-Item -ItemType Directory -Path "dist/$name" | Out-Null
           Copy-Item bin/* "dist/$name/"
           Copy-Item LICENSE, THIRD-PARTY-NOTICES.txt, README.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          # LF line ending so `sha256sum -c` also accepts the file.
-          [IO.File]::WriteAllText("$PWD/dist/$name.zip.sha256", "$hash  $name.zip`n")
-          Add-Content $env:GITHUB_ENV "ASSET=$name"
+
+          & $env:ISCC /Q "/DAppVersion=$env:VERSION" "/O$PWD\dist" installer\SimpleMark.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
+          $files = @("$name.zip", "SimpleMark-$env:VERSION-setup.exe")
+          # LF line endings so `sha256sum -c` also accepts the file.
+          $lines = foreach ($f in $files) { (Get-FileHash "dist/$f" -Algorithm SHA256).Hash.ToLowerInvariant() + "  $f" }
+          [IO.File]::WriteAllText("$PWD/dist/SHA256SUMS.txt", ($lines -join "`n") + "`n")
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Test installer
+        shell: pwsh
+        run: |
+          $setup = "dist/SimpleMark-$env:VERSION-setup.exe"
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Setup failed with exit code $($p.ExitCode)" }
+
+          $app = "$env:LOCALAPPDATA\Programs\Simple Mark"
+          $expected = "`"$app\SimpleMark.exe`" `"%1`""
+          if (-not (Test-Path "$app\SimpleMark.exe")) { throw 'SimpleMark.exe not installed' }
+          $command = (Get-ItemProperty 'HKCU:\Software\Classes\SimpleMark.md\shell\open\command').'(default)'
+          if ($command -ne $expected) { throw "Unexpected open command: $command" }
+          if (-not (Get-ItemProperty 'HKCU:\Software\Classes\.md\OpenWithProgids' -Name 'SimpleMark.md' -ErrorAction SilentlyContinue)) { throw '.md OpenWithProgids missing' }
+          $registered = (Get-ItemProperty 'HKCU:\Software\RegisteredApplications').'Simple Mark'
+          if ($registered -ne 'Software\SimpleMark\Capabilities') { throw 'RegisteredApplications entry missing' }
+          Write-Host "Installed OK: $command"
+
+          $p = Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Uninstall failed with exit code $($p.ExitCode)" }
+          # The uninstaller continues from a temporary copy and deletes unins000.exe last.
+          for ($i = 0; $i -lt 60 -and (Test-Path "$app\unins000.exe"); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$app\SimpleMark.exe") { throw 'SimpleMark.exe still present after uninstall' }
+          if (Test-Path 'HKCU:\Software\Classes\SimpleMark.md') { throw 'ProgId left behind after uninstall' }
+          if (Test-Path 'HKCU:\Software\SimpleMark') { throw 'Capabilities left behind after uninstall' }
+          if ((Get-ItemProperty 'HKCU:\Software\RegisteredApplications' -ErrorAction SilentlyContinue).'Simple Mark') { throw 'RegisteredApplications entry left behind' }
+          Write-Host 'Uninstalled cleanly'
 
       # Release notes come from the annotated tag message.
       - name: Publish release
+        if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --depth=1 origin "+refs/tags/$($env:GITHUB_REF_NAME):refs/tags/$($env:GITHUB_REF_NAME)"
           git tag -l --format='%(contents)' $env:GITHUB_REF_NAME | Set-Content -Path notes.md -Encoding utf8
-          gh release create $env:GITHUB_REF_NAME "dist/$env:ASSET.zip" "dist/$env:ASSET.zip.sha256" `
+          gh release create $env:GITHUB_REF_NAME `
+            "dist/SimpleMark-$env:VERSION-setup.exe" "dist/SimpleMark-$env:VERSION-win.zip" dist/SHA256SUMS.txt `
             --title "Simple Mark $env:VERSION" --notes-file notes.md --verify-tag
