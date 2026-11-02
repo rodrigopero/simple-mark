@@ -25,7 +25,10 @@ namespace SimpleMark
         private readonly Panel divider;
         private readonly MarkdownRenderer renderer;
         private readonly string initialPath;
+        private readonly Timer reloadTimer;
 
+        private FileSystemWatcher watcher;
+        private int reloadRetries;
         private string currentPath;
         private bool dirty;
         private bool suppressDirty;
@@ -80,9 +83,14 @@ namespace SimpleMark
 
             var openItem = new ToolStripMenuItem("&Open...", null, OnOpen) { ShortcutKeys = Keys.Control | Keys.O };
             var saveItem = new ToolStripMenuItem("&Save", null, OnSave) { ShortcutKeys = Keys.Control | Keys.S };
+            var reloadItem = new ToolStripMenuItem("&Reload", null, OnReload) { ShortcutKeys = Keys.F5 };
             var exitItem = new ToolStripMenuItem("E&xit", null, delegate { Close(); });
             var fileMenu = new ToolStripMenuItem("&File");
-            fileMenu.DropDownItems.AddRange(new ToolStripItem[] { openItem, saveItem, new ToolStripSeparator(), exitItem });
+            fileMenu.DropDownItems.AddRange(new ToolStripItem[] { openItem, saveItem, reloadItem, new ToolStripSeparator(), exitItem });
+
+            // Debounces watcher bursts: editors often write a file in several steps.
+            reloadTimer = new Timer { Interval = 300 };
+            reloadTimer.Tick += OnReloadTimerTick;
 
             editItem = new ToolStripMenuItem("&Edit plain text", null, OnToggleEdit) { ShortcutKeys = Keys.Control | Keys.E };
             var viewMenu = new ToolStripMenuItem("&View");
@@ -143,6 +151,8 @@ namespace SimpleMark
         {
             if (disposing)
             {
+                StopWatching();
+                reloadTimer.Dispose();
                 renderer.Dispose();
                 editor.Font.Dispose();
                 if (appIcon != null) appIcon.Dispose();
@@ -163,6 +173,27 @@ namespace SimpleMark
         private void OnSave(object sender, EventArgs e)
         {
             Save();
+        }
+
+        private void OnReload(object sender, EventArgs e)
+        {
+            if (currentPath == null || !ConfirmDiscard()) return;
+            ReloadFromDisk(false);
+        }
+
+        private void OnWatchedFileChanged(object sender, FileSystemEventArgs e)
+        {
+            reloadRetries = 0;
+            reloadTimer.Stop();
+            reloadTimer.Start();
+        }
+
+        private void OnReloadTimerTick(object sender, EventArgs e)
+        {
+            reloadTimer.Stop();
+            // Never discard unsaved edits automatically; F5 still offers to.
+            if (currentPath == null || dirty) return;
+            if (!ReloadFromDisk(true) && reloadRetries++ < 3) reloadTimer.Start();
         }
 
         private void OnToggleEdit(object sender, EventArgs e)
@@ -219,14 +250,7 @@ namespace SimpleMark
             try
             {
                 string fullPath = Path.GetFullPath(path);
-                byte[] bytes = SafeFile.ReadBounded(fullPath, MaxFileBytes);
-
-                hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
-                int offset = hasBom ? 3 : 0;
-                string text = Utf8NoBom.GetString(bytes, offset, bytes.Length - offset);
-
-                useLf = text.IndexOf('\n') >= 0 && text.IndexOf("\r\n", StringComparison.Ordinal) < 0;
-                string normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
+                string normalized = ReadDocument(fullPath);
 
                 suppressDirty = true;
                 editor.Text = normalized.Replace("\n", "\r\n");
@@ -237,6 +261,7 @@ namespace SimpleMark
                 dirty = false;
                 if (editor.Visible) OnToggleEdit(this, EventArgs.Empty);
                 UpdateTitle();
+                Watch(fullPath);
             }
             catch (Exception ex)
             {
@@ -244,6 +269,90 @@ namespace SimpleMark
                 if (!IsFileError(ex)) throw;
                 ShowError("Could not open the file.", ex);
             }
+        }
+
+        // Re-reads the current file in place, keeping the active view and its position.
+        private bool ReloadFromDisk(bool silent)
+        {
+            try
+            {
+                string normalized = ReadDocument(currentPath);
+                string editorText = normalized.Replace("\n", "\r\n");
+                if (silent && editorText == editor.Text) return true;
+
+                int firstVisible = viewer.Visible ? viewer.GetCharIndexFromPosition(new Point(1, 1)) : 0;
+                int caret = editor.SelectionStart;
+
+                suppressDirty = true;
+                editor.Text = editorText;
+                suppressDirty = false;
+                dirty = false;
+                renderer.Render(normalized, DocumentDirectory());
+
+                if (viewer.Visible)
+                {
+                    viewer.Select(Math.Min(firstVisible, viewer.TextLength), 0);
+                    viewer.ScrollToCaret();
+                }
+                else
+                {
+                    editor.Select(Math.Min(caret, editor.TextLength), 0);
+                    editor.ScrollToCaret();
+                }
+                UpdateTitle();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                suppressDirty = false;
+                if (!IsFileError(ex)) throw;
+                if (!silent) ShowError("Could not reload the file.", ex);
+                return false;
+            }
+        }
+
+        // Returns the document with "\n" line endings and records its BOM and line-ending style.
+        private string ReadDocument(string fullPath)
+        {
+            byte[] bytes = SafeFile.ReadBounded(fullPath, MaxFileBytes);
+
+            hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+            int offset = hasBom ? 3 : 0;
+            string text = Utf8NoBom.GetString(bytes, offset, bytes.Length - offset);
+
+            useLf = text.IndexOf('\n') >= 0 && text.IndexOf("\r\n", StringComparison.Ordinal) < 0;
+            return text.Replace("\r\n", "\n").Replace('\r', '\n');
+        }
+
+        private void Watch(string fullPath)
+        {
+            StopWatching();
+            try
+            {
+                watcher = new FileSystemWatcher(Path.GetDirectoryName(fullPath), Path.GetFileName(fullPath))
+                {
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+                    SynchronizingObject = this,
+                };
+                watcher.Changed += OnWatchedFileChanged;
+                watcher.Created += OnWatchedFileChanged;
+                watcher.Renamed += OnWatchedFileChanged;
+                watcher.EnableRaisingEvents = true;
+            }
+            catch (Exception ex)
+            {
+                // Some locations (e.g. certain network shares) cannot be watched; F5 still works.
+                StopWatching();
+                if (!IsFileError(ex)) throw;
+            }
+        }
+
+        private void StopWatching()
+        {
+            reloadTimer.Stop();
+            if (watcher == null) return;
+            watcher.Dispose();
+            watcher = null;
         }
 
 
@@ -265,7 +374,9 @@ namespace SimpleMark
                 if (useLf) text = text.Replace("\r\n", "\n");
 
                 SafeFile.WriteAtomic(path, text, hasBom ? new UTF8Encoding(true) : Utf8NoBom);
-                currentPath = path;
+                string fullPath = Path.GetFullPath(path);
+                if (fullPath != currentPath) Watch(fullPath);
+                currentPath = fullPath;
                 dirty = false;
                 UpdateTitle();
                 return true;

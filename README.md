@@ -4,6 +4,7 @@ Minimal, secure Markdown viewer for Windows.
 
 - Opens `.md` files rendered (formatted) by default.
 - Optional plain-text editing (`View > Edit plain text`, `Ctrl+E`).
+- Reloads automatically when the open file changes on disk (unless you have unsaved edits); `File > Reload` (`F5`) reloads on demand.
 - Light and dark mode (`View > Dark mode`, `Ctrl+D`); starts with the Windows app theme.
 - Small and dependency-free: runs on the .NET Framework 4.8 already included in Windows 10/11.
 
