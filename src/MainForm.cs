@@ -1,51 +1,47 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Security;
-using System.Text;
 using System.Windows.Forms;
 
 namespace SimpleMark
 {
     internal sealed class MainForm : Form
     {
-        private const long MaxFileBytes = 5L * 1024 * 1024;
-        private const string AppName = "Simple Mark";
-        private const string FileFilter =
-            "Markdown (*.md;*.markdown)|*.md;*.markdown|Text (*.txt)|*.txt|All files (*.*)|*.*";
+        public const string AppName = "Simple Mark";
 
-        private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
-
-        private readonly RichTextView viewer;
-        private readonly PlainTextEditor editor;
         private readonly Icon appIcon;
+        private readonly ToolStripMenuItem saveItem;
+        private readonly ToolStripMenuItem reloadItem;
+        private readonly ToolStripMenuItem closeTabItem;
         private readonly ToolStripMenuItem editItem;
+        private readonly ToolStripMenuItem findItem;
+        private readonly ToolStripMenuItem findNextItem;
+        private readonly ToolStripMenuItem findPreviousItem;
         private readonly ToolStripMenuItem darkItem;
         private readonly MenuStrip menu;
+        private readonly TabStrip tabStrip;
         private readonly Panel divider;
-        private readonly MarkdownRenderer renderer;
-        private readonly string initialPath;
-        private readonly Timer reloadTimer;
+        private readonly FindBar findBar;
+        private readonly Panel documentHost;
+        private readonly StartScreen startScreen;
+        private readonly string[] initialPaths;
 
-        private FileSystemWatcher watcher;
-        private int reloadRetries;
-        private string currentPath;
-        private bool dirty;
-        private bool suppressDirty;
-        private bool hasBom;
-        private bool useLf;
+        private DocumentTab activeTab;
         private FormWindowState lastWindowState;
+        private FormWindowState restoreState = FormWindowState.Normal;
         private Palette palette = Palette.FromSystem();
 
-        public MainForm(string initialPath)
+        public MainForm(string[] initialPaths)
         {
-            this.initialPath = initialPath;
+            this.initialPaths = initialPaths ?? new string[0];
 
             Text = AppName;
             Font = SystemFonts.MessageBoxFont;
             ClientSize = new Size(1000, 760);
             MinimumSize = new Size(480, 360);
             StartPosition = FormStartPosition.CenterScreen;
+            AllowDrop = true;
 
             using (Stream iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("SimpleMark.app.ico"))
             {
@@ -56,63 +52,82 @@ namespace SimpleMark
                 }
             }
 
-            viewer = new RichTextView
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                DetectUrls = false,
-                EnableAutoDragDrop = false,
-                BorderStyle = BorderStyle.None,
-                ScrollBars = RichTextBoxScrollBars.Vertical,
-            };
-
-            editor = new PlainTextEditor
-            {
-                Dock = DockStyle.Fill,
-                Multiline = true,
-                AcceptsTab = true,
-                AcceptsReturn = true,
-                MaxLength = 0,
-                ScrollBars = ScrollBars.Vertical,
-                WordWrap = true,
-                BorderStyle = BorderStyle.None,
-                Font = new Font("Consolas", 10.5f),
-                Visible = false,
-            };
-            editor.TextChanged += OnEditorTextChanged;
-
-            var openItem = new ToolStripMenuItem("&Open...", null, OnOpen) { ShortcutKeys = Keys.Control | Keys.O };
-            var saveItem = new ToolStripMenuItem("&Save", null, OnSave) { ShortcutKeys = Keys.Control | Keys.S };
-            var reloadItem = new ToolStripMenuItem("&Reload", null, OnReload) { ShortcutKeys = Keys.F5 };
+            var newTabItem = new ToolStripMenuItem("New &tab", null, delegate { AddTab(); }) { ShortcutKeys = Keys.Control | Keys.T };
+            var openItem = new ToolStripMenuItem("&Open...", null, delegate { ShowOpenDialog(); }) { ShortcutKeys = Keys.Control | Keys.O };
+            saveItem = new ToolStripMenuItem("&Save", null, delegate { activeTab.Save(); }) { ShortcutKeys = Keys.Control | Keys.S };
+            reloadItem = new ToolStripMenuItem("&Reload", null, delegate { activeTab.Reload(); }) { ShortcutKeys = Keys.F5 };
+            closeTabItem = new ToolStripMenuItem("&Close tab", null, delegate { CloseTab(activeTab); }) { ShortcutKeys = Keys.Control | Keys.W };
             var exitItem = new ToolStripMenuItem("E&xit", null, delegate { Close(); });
             var fileMenu = new ToolStripMenuItem("&File");
-            fileMenu.DropDownItems.AddRange(new ToolStripItem[] { openItem, saveItem, reloadItem, new ToolStripSeparator(), exitItem });
-
-            // Debounces watcher bursts: editors often write a file in several steps.
-            reloadTimer = new Timer { Interval = 300 };
-            reloadTimer.Tick += OnReloadTimerTick;
+            fileMenu.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                newTabItem, openItem, saveItem, reloadItem, new ToolStripSeparator(), closeTabItem, exitItem,
+            });
 
             editItem = new ToolStripMenuItem("&Edit plain text", null, OnToggleEdit) { ShortcutKeys = Keys.Control | Keys.E };
-            var viewMenu = new ToolStripMenuItem("&View");
+            findItem = new ToolStripMenuItem("&Find...", null, delegate { ShowFind(); }) { ShortcutKeys = Keys.Control | Keys.F };
+            findNextItem = new ToolStripMenuItem("Find &next", null, delegate { FindAgain(true); }) { ShortcutKeys = Keys.F3 };
+            findPreviousItem = new ToolStripMenuItem("Find &previous", null, delegate { FindAgain(false); }) { ShortcutKeys = Keys.Shift | Keys.F3 };
             darkItem = new ToolStripMenuItem("&Dark mode", null, OnToggleDark) { ShortcutKeys = Keys.Control | Keys.D };
-            viewMenu.DropDownItems.AddRange(new ToolStripItem[] { editItem, darkItem });
+            var viewMenu = new ToolStripMenuItem("&View");
+            viewMenu.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                editItem, new ToolStripSeparator(), findItem, findNextItem, findPreviousItem, new ToolStripSeparator(), darkItem,
+            });
 
             menu = new MenuStrip { Padding = new Padding(8, 4, 0, 4) };
             menu.Items.AddRange(new ToolStripItem[] { fileMenu, viewMenu });
 
-            // Thin brand-colored line between the menu and the document.
+            tabStrip = new TabStrip { Visible = false };
+            tabStrip.SelectedTabChanged += OnSelectedTabChanged;
+            tabStrip.CloseRequested += delegate(object sender, TabEventArgs e) { CloseTab(e.Tab); };
+
+            // Thin brand-colored line between the tabs and the document.
             divider = new Panel { Dock = DockStyle.Top, Height = 2, BackColor = Palette.Brand };
 
+            findBar = new FindBar { Visible = false };
+            findBar.CloseRequested += delegate { HideFind(); };
+
+            startScreen = new StartScreen(appIcon) { Dock = DockStyle.Fill };
+            startScreen.OpenRequested += delegate { ShowOpenDialog(); };
+            startScreen.NewRequested += delegate { AddTab(); };
+
+            // Documents live in their own host so adding tabs later does not disturb the docking order.
+            documentHost = new Panel { Dock = DockStyle.Fill };
+            documentHost.Controls.Add(startScreen);
+
             // Fill controls first: WinForms docks the last added control first.
-            Controls.Add(viewer);
-            Controls.Add(editor);
+            Controls.Add(documentHost);
+            Controls.Add(findBar);
             Controls.Add(divider);
+            Controls.Add(tabStrip);
             Controls.Add(menu);
             MainMenuStrip = menu;
 
-            renderer = new MarkdownRenderer(viewer);
+            DragEnter += OnFileDragOver;
+            DragOver += OnFileDragOver;
+            DragDrop += OnFileDrop;
+
             ApplyTheme();
-            UpdateTitle();
+            UpdateActiveState();
+        }
+
+        /// <summary>Opens files sent by a second launch; safe to call from any thread.</summary>
+        public void OpenFromAnotherInstance(string[] paths)
+        {
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (WindowState == FormWindowState.Minimized) WindowState = restoreState;
+                    OpenPaths(paths);
+                    Activate();
+                });
+            }
+            catch (InvalidOperationException)
+            {
+                // The window is closing; there is nothing left to open the files in.
+            }
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -124,13 +139,13 @@ namespace SimpleMark
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            if (!string.IsNullOrEmpty(initialPath)) OpenFile(initialPath);
+            OpenPaths(initialPaths);
         }
 
         protected override void OnResizeEnd(EventArgs e)
         {
             base.OnResizeEnd(e);
-            RerenderIfWidthChanged();
+            if (activeTab != null) activeTab.RerenderIfWidthChanged();
         }
 
         protected override void OnSizeChanged(EventArgs e)
@@ -138,306 +153,234 @@ namespace SimpleMark
             base.OnSizeChanged(e);
             if (WindowState == lastWindowState) return;
             lastWindowState = WindowState;
-            if (WindowState != FormWindowState.Minimized) RerenderIfWidthChanged();
+            if (WindowState == FormWindowState.Minimized) return;
+            restoreState = WindowState;
+            if (activeTab != null) activeTab.RerenderIfWidthChanged();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (!ConfirmDiscard()) e.Cancel = true;
+            foreach (DocumentTab tab in new List<DocumentTab>(tabStrip.Tabs))
+            {
+                if (!tab.IsDirty) continue;
+                tabStrip.SelectedTab = tab;
+                if (tab.ConfirmDiscard(this)) continue;
+                e.Cancel = true;
+                break;
+            }
             base.OnFormClosing(e);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.Tab) || keyData == (Keys.Control | Keys.Shift | Keys.Tab))
+            {
+                tabStrip.SelectNext((keyData & Keys.Shift) == 0 ? 1 : -1);
+                return true;
+            }
+            if (keyData == Keys.Escape && findBar.Visible)
+            {
+                HideFind();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
-            {
-                StopWatching();
-                reloadTimer.Dispose();
-                renderer.Dispose();
-                editor.Font.Dispose();
-                if (appIcon != null) appIcon.Dispose();
-            }
+            if (disposing && appIcon != null) appIcon.Dispose();
             base.Dispose(disposing);
         }
 
-        private void OnOpen(object sender, EventArgs e)
+        private void ShowOpenDialog()
         {
-            if (!ConfirmDiscard()) return;
-
-            using (var dialog = new OpenFileDialog { Filter = FileFilter, CheckFileExists = true })
+            using (var dialog = new OpenFileDialog { Filter = DocumentTab.FileFilter, CheckFileExists = true, Multiselect = true })
             {
-                if (dialog.ShowDialog(this) == DialogResult.OK) OpenFile(dialog.FileName);
+                if (dialog.ShowDialog(this) == DialogResult.OK) OpenPaths(dialog.FileNames);
             }
-        }
-
-        private void OnSave(object sender, EventArgs e)
-        {
-            Save();
-        }
-
-        private void OnReload(object sender, EventArgs e)
-        {
-            if (currentPath == null || !ConfirmDiscard()) return;
-            ReloadFromDisk(false);
-        }
-
-        private void OnWatchedFileChanged(object sender, FileSystemEventArgs e)
-        {
-            reloadRetries = 0;
-            reloadTimer.Stop();
-            reloadTimer.Start();
-        }
-
-        private void OnReloadTimerTick(object sender, EventArgs e)
-        {
-            reloadTimer.Stop();
-            // Never discard unsaved edits automatically; F5 still offers to.
-            if (currentPath == null || dirty) return;
-            if (!ReloadFromDisk(true) && reloadRetries++ < 3) reloadTimer.Start();
         }
 
         private void OnToggleEdit(object sender, EventArgs e)
         {
-            if (editor.Visible)
-            {
-                renderer.Render(editor.Text, DocumentDirectory());
-                editor.Visible = false;
-                viewer.Visible = true;
-                viewer.Focus();
-            }
-            else
-            {
-                viewer.Visible = false;
-                editor.Visible = true;
-                editor.Focus();
-            }
-            editItem.Checked = editor.Visible;
+            activeTab.ToggleEdit();
+            if (findBar.Visible) findBar.Research();
         }
 
         private void OnToggleDark(object sender, EventArgs e)
         {
             palette = palette.IsDark ? Palette.Light : Palette.Dark;
             ApplyTheme();
-            if (viewer.Visible) RerenderPreservingScroll();
-            else renderer.Rerender();
+            if (activeTab != null) activeTab.RerenderIfWidthChanged();
+        }
+
+        private void ShowFind()
+        {
+            findBar.Target = activeTab;
+            findBar.Open(activeTab.SelectedLine);
+        }
+
+        private void FindAgain(bool forward)
+        {
+            if (!findBar.Visible) ShowFind();
+            if (forward) findBar.FindNext();
+            else findBar.FindPrevious();
+        }
+
+        private void HideFind()
+        {
+            findBar.Visible = false;
+            if (activeTab != null) activeTab.FocusContent();
+        }
+
+        private void OnFileDragOver(object sender, DragEventArgs e)
+        {
+            bool files = e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop);
+            e.Effect = files ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+
+        private void OnFileDrop(object sender, DragEventArgs e)
+        {
+            var files = e.Data == null ? null : e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files == null) return;
+
+            // Open after the drop completes so the drag source (e.g. Explorer) is not blocked by dialogs.
+            BeginInvoke((MethodInvoker)delegate
+            {
+                OpenPaths(files);
+                Activate();
+            });
+        }
+
+        private void OnSelectedTabChanged(object sender, EventArgs e)
+        {
+            DocumentTab previous = activeTab;
+            activeTab = tabStrip.SelectedTab;
+
+            Control shown = activeTab ?? (Control)startScreen;
+            shown.Visible = true;
+            shown.BringToFront();
+            if (previous != null && previous != activeTab) previous.Visible = false;
+            startScreen.Visible = activeTab == null;
+
+            findBar.Target = activeTab;
+            if (activeTab == null)
+            {
+                findBar.Visible = false;
+            }
+            else
+            {
+                activeTab.RerenderIfWidthChanged();
+                activeTab.FocusContent();
+                if (findBar.Visible) findBar.Research();
+            }
+            UpdateActiveState();
+        }
+
+        private void OnTabStateChanged(object sender, EventArgs e)
+        {
+            tabStrip.RefreshTabs();
+            if (sender == activeTab) UpdateActiveState();
         }
 
         private void ApplyTheme()
         {
             BackColor = palette.Background;
-            viewer.BackColor = palette.Background;
-            viewer.DarkScrollbars = palette.IsDark;
-            editor.BackColor = palette.Background;
-            editor.ForeColor = palette.Text;
-            editor.DarkScrollbars = palette.IsDark;
+            documentHost.BackColor = palette.Background;
             menu.Renderer = Theme.CreateMenuRenderer(palette);
             menu.BackColor = palette.Background;
             menu.ForeColor = palette.Text;
+            tabStrip.Palette = palette;
+            findBar.Palette = palette;
+            startScreen.Palette = palette;
             darkItem.Checked = palette.IsDark;
-            renderer.Palette = palette;
+            foreach (DocumentTab tab in tabStrip.Tabs) tab.ApplyPalette(palette);
             WindowChrome.ApplyToWindow(this, palette);
         }
 
-        private void OnEditorTextChanged(object sender, EventArgs e)
+        private DocumentTab AddTab()
         {
-            if (suppressDirty || dirty) return;
-            dirty = true;
-            UpdateTitle();
+            var tab = new DocumentTab(palette) { Dock = DockStyle.Fill, Visible = false };
+            tab.StateChanged += OnTabStateChanged;
+            documentHost.Controls.Add(tab);
+            tabStrip.Add(tab);
+            tabStrip.SelectedTab = tab;
+            return tab;
         }
 
-        private void OpenFile(string path)
+        private void OpenPaths(IEnumerable<string> paths)
         {
+            foreach (string path in paths) OpenPath(path);
+        }
+
+        // Activates the tab already showing the file, else opens it in an empty Untitled active tab or a new one.
+        private void OpenPath(string path)
+        {
+            DocumentTab existing = FindTab(path);
+            if (existing != null)
+            {
+                tabStrip.SelectedTab = existing;
+                return;
+            }
+
+            DocumentTab previous = activeTab;
+            bool reuse = previous != null && previous.IsPristine;
+            DocumentTab target = reuse ? previous : AddTab();
+            if (target.Open(path) || reuse) return;
+
+            RemoveTab(target);
+            if (previous != null) tabStrip.SelectedTab = previous;
+        }
+
+        private DocumentTab FindTab(string path)
+        {
+            string fullPath;
             try
             {
-                string fullPath = Path.GetFullPath(path);
-                string normalized = ReadDocument(fullPath);
-
-                suppressDirty = true;
-                editor.Text = normalized.Replace("\n", "\r\n");
-                suppressDirty = false;
-
-                currentPath = fullPath;
-                renderer.Render(normalized, DocumentDirectory());
-                dirty = false;
-                if (editor.Visible) OnToggleEdit(this, EventArgs.Empty);
-                UpdateTitle();
-                Watch(fullPath);
+                fullPath = Path.GetFullPath(path);
             }
             catch (Exception ex)
             {
-                suppressDirty = false;
-                if (!IsFileError(ex)) throw;
-                ShowError("Could not open the file.", ex);
+                if (!DocumentTab.IsFileError(ex)) throw;
+                return null;
             }
-        }
 
-        // Re-reads the current file in place, keeping the active view and its position.
-        private bool ReloadFromDisk(bool silent)
-        {
-            try
+            foreach (DocumentTab tab in tabStrip.Tabs)
             {
-                string normalized = ReadDocument(currentPath);
-                string editorText = normalized.Replace("\n", "\r\n");
-                if (silent && editorText == editor.Text) return true;
-
-                int firstVisible = viewer.Visible ? viewer.GetCharIndexFromPosition(new Point(1, 1)) : 0;
-                int caret = editor.SelectionStart;
-
-                suppressDirty = true;
-                editor.Text = editorText;
-                suppressDirty = false;
-                dirty = false;
-                renderer.Render(normalized, DocumentDirectory());
-
-                if (viewer.Visible)
-                {
-                    viewer.Select(Math.Min(firstVisible, viewer.TextLength), 0);
-                    viewer.ScrollToCaret();
-                }
-                else
-                {
-                    editor.Select(Math.Min(caret, editor.TextLength), 0);
-                    editor.ScrollToCaret();
-                }
-                UpdateTitle();
-                return true;
+                if (string.Equals(tab.FullPath, fullPath, StringComparison.OrdinalIgnoreCase)) return tab;
             }
-            catch (Exception ex)
+            return null;
+        }
+
+        private void CloseTab(DocumentTab tab)
+        {
+            if (tab.IsDirty)
             {
-                suppressDirty = false;
-                if (!IsFileError(ex)) throw;
-                if (!silent) ShowError("Could not reload the file.", ex);
-                return false;
+                tabStrip.SelectedTab = tab;
+                if (!tab.ConfirmDiscard(this)) return;
             }
+            RemoveTab(tab);
         }
 
-        // Returns the document with "\n" line endings and records its BOM and line-ending style.
-        private string ReadDocument(string fullPath)
+        private void RemoveTab(DocumentTab tab)
         {
-            byte[] bytes = SafeFile.ReadBounded(fullPath, MaxFileBytes);
-
-            hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
-            int offset = hasBom ? 3 : 0;
-            string text = Utf8NoBom.GetString(bytes, offset, bytes.Length - offset);
-
-            useLf = text.IndexOf('\n') >= 0 && text.IndexOf("\r\n", StringComparison.Ordinal) < 0;
-            return text.Replace("\r\n", "\n").Replace('\r', '\n');
+            tabStrip.Remove(tab);
+            documentHost.Controls.Remove(tab);
+            tab.Dispose();
         }
 
-        private void Watch(string fullPath)
+        // Menu items that need a document are disabled (and their shortcuts inert) while none is open.
+        private void UpdateActiveState()
         {
-            StopWatching();
-            try
+            bool hasTab = activeTab != null;
+            tabStrip.Visible = hasTab;
+            foreach (ToolStripMenuItem item in new[] { saveItem, reloadItem, closeTabItem, editItem, findItem, findNextItem, findPreviousItem })
             {
-                watcher = new FileSystemWatcher(Path.GetDirectoryName(fullPath), Path.GetFileName(fullPath))
-                {
-                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
-                    SynchronizingObject = this,
-                };
-                watcher.Changed += OnWatchedFileChanged;
-                watcher.Created += OnWatchedFileChanged;
-                watcher.Renamed += OnWatchedFileChanged;
-                watcher.EnableRaisingEvents = true;
+                item.Enabled = hasTab;
             }
-            catch (Exception ex)
-            {
-                // Some locations (e.g. certain network shares) cannot be watched; F5 still works.
-                StopWatching();
-                if (!IsFileError(ex)) throw;
-            }
-        }
-
-        private void StopWatching()
-        {
-            reloadTimer.Stop();
-            if (watcher == null) return;
-            watcher.Dispose();
-            watcher = null;
-        }
-
-
-        private bool Save()
-        {
-            string path = currentPath;
-            if (path == null)
-            {
-                using (var dialog = new SaveFileDialog { Filter = FileFilter, DefaultExt = "md", OverwritePrompt = true })
-                {
-                    if (dialog.ShowDialog(this) != DialogResult.OK) return false;
-                    path = dialog.FileName;
-                }
-            }
-
-            try
-            {
-                string text = editor.Text;
-                if (useLf) text = text.Replace("\r\n", "\n");
-
-                SafeFile.WriteAtomic(path, text, hasBom ? new UTF8Encoding(true) : Utf8NoBom);
-                string fullPath = Path.GetFullPath(path);
-                if (fullPath != currentPath) Watch(fullPath);
-                currentPath = fullPath;
-                dirty = false;
-                UpdateTitle();
-                return true;
-            }
-            catch (Exception ex)
-            {
-                if (!IsFileError(ex)) throw;
-                ShowError("Could not save the file.", ex);
-                return false;
-            }
-        }
-
-
-        private bool ConfirmDiscard()
-        {
-            if (!dirty) return true;
-
-            DialogResult answer = MessageBox.Show(this, "Save changes before continuing?", AppName,
-                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-            if (answer == DialogResult.Yes) return Save();
-            return answer == DialogResult.No;
-        }
-
-        private string DocumentDirectory()
-        {
-            return currentPath == null ? null : Path.GetDirectoryName(currentPath);
-        }
-
-        private void RerenderIfWidthChanged()
-        {
-            if (!viewer.Visible || viewer.ContentWidth == renderer.RenderedWidth) return;
-            RerenderPreservingScroll();
-        }
-
-        private void RerenderPreservingScroll()
-        {
-            int firstVisible = viewer.GetCharIndexFromPosition(new Point(1, 1));
-            renderer.Rerender();
-            viewer.Select(firstVisible, 0);
-            viewer.ScrollToCaret();
-        }
-
-        private void UpdateTitle()
-        {
-            string name = currentPath == null ? "Untitled" : Path.GetFileName(currentPath);
-            Text = (dirty ? "*" : string.Empty) + name + " - " + AppName;
-        }
-
-        private void ShowError(string message, Exception ex)
-        {
-            MessageBox.Show(this, message + Environment.NewLine + ex.Message, AppName,
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-
-        private static bool IsFileError(Exception ex)
-        {
-            return ex is IOException
-                || ex is UnauthorizedAccessException
-                || ex is SecurityException
-                || ex is ArgumentException
-                || ex is NotSupportedException;
+            editItem.Checked = hasTab && activeTab.IsEditing;
+            Text = hasTab
+                ? (activeTab.IsDirty ? "*" : string.Empty) + activeTab.DisplayName + " - " + AppName
+                : AppName;
         }
     }
 }

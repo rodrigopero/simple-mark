@@ -2,8 +2,9 @@
 
 Minimal, secure Markdown viewer for Windows.
 
-- Opens `.md` files rendered (formatted) by default.
+- Opens `.md` files rendered (formatted) by default, each in its own tab.
 - Optional plain-text editing (`View > Edit plain text`, `Ctrl+E`).
+- Find in the current tab (`View > Find`, `Ctrl+F`), in both the rendered view and the plain text.
 - Reloads automatically when the open file changes on disk (unless you have unsaved edits); `File > Reload` (`F5`) reloads on demand.
 - Light and dark mode (`View > Dark mode`, `Ctrl+D`); starts with the Windows app theme.
 - Small and dependency-free: runs on the .NET Framework 4.8 already included in Windows 10/11.
@@ -42,7 +43,26 @@ same page is reachable from **Settings > Apps > Default apps > Simple Mark**, or
 SimpleMark.exe path\to\file.md
 ```
 
-Or use `File > Open` (`Ctrl+O`). Save with `Ctrl+S`.
+Or use `File > Open` (`Ctrl+O`, several files at once are allowed), or drop files onto the window.
+Every file opens in its own tab; a file that is already open just switches to its tab. With no tab
+open, a start screen offers to open a file or create a new document.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+T` | New tab |
+| `Ctrl+O` | Open files in new tabs |
+| `Ctrl+S` | Save the current tab |
+| `F5` | Reload the current tab from disk |
+| `Ctrl+W` | Close the current tab (middle-click a tab also closes it) |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
+| `Ctrl+E` | Toggle plain-text editing for the current tab |
+| `Ctrl+F` | Find in the current tab (`Enter` / `Shift+Enter` in the box: next / previous) |
+| `F3` / `Shift+F3` | Next / previous match |
+| `Esc` | Close the find bar |
+| `Ctrl+D` | Toggle dark mode |
+
+Only one window runs per user: opening a `.md` file from Explorer (or running `SimpleMark.exe` again)
+while Simple Mark is open adds the file as a new tab in the existing window and brings it to the front.
 
 ## Build
 

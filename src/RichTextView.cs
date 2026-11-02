@@ -43,6 +43,10 @@ namespace SimpleMark
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool HideCaret(IntPtr hWnd);
 
+        [DllImport("ole32.dll", ExactSpelling = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        private static extern int RevokeDragDrop(IntPtr hWnd);
+
         /// <summary>Width in pixels of the centered content column.</summary>
         public int ContentWidth { get; private set; }
 
@@ -68,6 +72,9 @@ namespace SimpleMark
             base.OnHandleCreated(e);
             WindowChrome.ApplyToScrollbars(this, darkScrollbars);
             UpdateContentRect();
+            // RichEdit registers its own OLE drop target, which would keep dropped files from reaching
+            // the window; without it, OLE passes drops on to the parent window.
+            RevokeDragDrop(Handle);
         }
 
         protected override void OnResize(EventArgs e)

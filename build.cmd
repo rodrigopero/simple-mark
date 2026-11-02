@@ -35,7 +35,7 @@ if not exist "%OUT%" mkdir "%OUT%"
   /win32manifest:"%ROOT%src\app.manifest" ^
   /win32icon:"%ROOT%src\app.ico" ^
   /resource:"%ROOT%src\app.ico",SimpleMark.app.ico ^
-  /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll ^
+  /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll ^
   /r:"%LIB%\Markdig.dll" /r:"%LIB%\System.Memory.dll" ^
   "%ROOT%src\*.cs"
 if errorlevel 1 exit /b 1
